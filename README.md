@@ -1,6 +1,6 @@
 # Make a scheduled lesson job visible when it fails
 
-Infrai is used here for one key, one API path, and a plain REST call from any language, so a lesson-sync failure can be grouped without dragging in an SDK or a second transport layer. The command runs one edtech lesson-sync job. When it fails, Infrai records it as a grouped error keyed by the domain and job name. The code below shows the shape a maintainer can wrap around an existing scheduler callback.
+The command runs a single edtech lesson-sync job, and any failure gets shipped to Infrai under one key as a grouped error keyed by domain and job name. The snippet below shows the pattern a maintainer can wrap around an existing scheduler callback, but bear in mind that grouped errors only help if the dedup fingerprint is stable across retries.
 
 ## Run the check
 
@@ -9,15 +9,15 @@ export INFRAI_API_KEY=your-key
 go run .
 ```
 
-The sample job raises a validation error on purpose, then prints `scheduled job failure surfaced` after the capture request is accepted. The key stays outside the repository.
+The sample job returns a validation error on purpose, then prints `scheduled job failure surfaced` after the capture request is accepted. The key stays outside the repository, which is sensible because a leaked credential in git history is a failure mode I see too often.
 
 ## The request that matters
 
-`runLessonSync` keeps the job body independent from the reporting transport, which matters when you do not want scheduler code coupled to whatever is shipping telemetry this week. Its capture payload carries the exception, a short message, a stable fingerprint, and context that identifies the job. Repeated failures from `lesson-sync` then land in one triage stream instead of getting mixed into unrelated scheduled work.
+`runLessonSync` keeps the job body independent from the reporting transport. Its capture payload contains the exception, a terse message, a stable fingerprint, and context identifying the job. Repeated failures from `lesson-sync` therefore arrive as one triage stream instead of being mixed with other scheduled work, assuming the server actually honors the fingerprint and does not silently drop duplicates under load.
 
-The client sends an explicit `POST` to `/v1/errors/capture` and reads the `{ok, data, error, metadata}` envelope. A false `ok` returns the server error to the caller. HTTP 429 responses honor `Retry-After`; otherwise the delay grows from 500ms. The payload includes a client-owned `idempotency_key`, so retrying the same capture preserves one event identity.
+The client sends an explicit `POST` to `/v1/errors/capture` and reads the `{ok, data, error, metadata}` envelope. A false `ok` returns the server error to the caller. HTTP 429 responses honor `Retry-After`; otherwise the delay grows from 500ms. The payload includes a client-owned `idempotency_key`, so retrying the same capture keeps one event identity, which matters when your network is lossy and you cannot afford duplicate incident tickets.
 
-This is a plain REST example with no SDK to install. One `INFRAI_API_KEY` covers the call, which keeps the operational path short for a compliance-minded backend: the job names the business action, the capture contains only the fields needed for triage, and the credential never enters source control.
+This is a plain REST example with no SDK to install. One `INFRAI_API_KEY` covers the call, which keeps the operational path short for a compliance-minded backend: the job names the business action, the capture contains only the fields needed for triage, and the credential never enters source control. I remain skeptical of any vendor claiming durability without documenting their write quorum, so check the limits before relying on this for audit.
 
 ## Check the wrapper
 
@@ -25,7 +25,7 @@ This is a plain REST example with no SDK to install. One `INFRAI_API_KEY` covers
 go test ./...
 ```
 
-The focused test checks that a failed job is reported again with the expected message and `edtech` / job fingerprint. The production entry point uses the same callback with `infrai.errors.capture` represented by `ErrorsClient.Capture`.
+The focused test verifies that a failed job is re-reported with the expected message and `edtech` / job fingerprint. The production entry point uses the same callback with `infrai.errors.capture` represented by `ErrorsClient.Capture`. In my experience the wrapper is where most consistency bugs hide, because the scheduler may call it twice on a timeout.
 
 ## License
 
@@ -33,7 +33,7 @@ MIT
 
 ## Setting up for real use: Edtech Scheduled Job Failures Go
 
-The example above is the failure path, not the whole setup. The production checklist: The details below apply to Edtech Scheduled Job Failures Go.
+Above is the happy path. The production checklist: The details below apply to Edtech Scheduled Job Failures Go.
 
 **Account & key**
 
